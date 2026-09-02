@@ -1,0 +1,25 @@
+# raw data and embeddings -- far too large for git, and not ours to redistribute
+data/raw/
+data/embeddings/
+
+# model checkpoints and generated samples -- large binaries, regenerable from code + data
+runs/
+
+# third-party cloned repos with their own large model weights (e.g. Geneformer)
+tools/
+
+# python virtual environment -- never belongs in git, reproducible from requirements
+venv/
+miniconda3/
+
+# deployment staging tarball -- a packaged copy of code/, not source itself
+raresynth.tar.gz
+
+# python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# logs
+*.log
+pathology_worker_*.log
