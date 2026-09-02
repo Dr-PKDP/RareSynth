@@ -346,6 +346,44 @@ about this discipline given the project's stated goal of a
 reviewer-proof paper: an honest limitation, clearly measured and
 discussed, is defensible; a cherry-picked favorable run is not.
 
+**UPDATE: the 500-epoch run is done, and this is exactly the case
+described above.** FID improved for most modalities (a real,
+measurable, honestly-reportable gain from the LR-decay fix) but PRDC
+precision remained exactly 0.000 across every modality in both the
+200-epoch and 500-epoch runs, and C2ST accuracy remained 0.98-1.00 in
+both -- a real classifier still nearly perfectly separates real from
+generated samples. Pathology's recall specifically got WORSE (0.610 to
+0.000) at the longer duration, a real regression. One anomaly flagged
+but not yet explained: geno/rna/ehr recall values are IDENTICAL to
+three decimal places between the two runs, which is unexpected for two
+genuinely different checkpoints and needs investigation before being
+treated as a stable, trustworthy number.
+
+**Framing for the paper, if these numbers or ones like them are what
+end up being reported**: this is not a failure to hide -- it is a
+genuine, useful limitation finding about what a first working version of
+a novel five-modality architecture achieves on ~3,800 real training
+cases, and the paper should say so plainly rather than obscure it with
+selective reporting. A defensible way to frame this in Discussion:
+distributional similarity (FID) can improve with training refinements
+like proper LR scheduling while individual-sample fidelity (precision,
+C2ST) remains a harder problem, plausibly limited by real training data
+scale relative to model capacity (67.7M MoDiT parameters against 3,836
+cases) rather than by the architecture or guidance mechanism specifically
+-- and this is exactly why the CMCS and mechanism-retrieval evaluations
+(Section 3.5) matter as much as or more than raw fidelity: a generator
+that has not yet achieved tight per-sample fidelity may still capture
+useful cross-modal structure, which is the paper's actual central claim,
+not "these samples are indistinguishable from real data." Do not
+overstate what fidelity numbers like these support.
+
+Next real levers being investigated, in rough order of expected impact:
+training data scale (CPTAC and Pfib_423 remain RNA-only, not part of
+this joint 5-modality training set at all -- a real, addressable gap),
+classifier-free guidance strength at sampling time (not yet tuned),
+DDIM step count (currently 200, unexplored whether more helps precision
+specifically).
+
 Pathology's output format is a genuine architectural point worth
 remembering for Methods: it is a per-case BAG of variable-length tile
 embeddings (CTransPath, 768-dim per tile, capped at 8,000 tiles/case),

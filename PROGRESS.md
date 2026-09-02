@@ -31,17 +31,15 @@ annotation sources). See Data Inventory below.
 one manifest (4,865 TCGA cases, 36.0% with all four modalities, 0.9% with
 none -- explained, not a bug) and a working, live-tested PyTorch Dataset.
 
-**Real fidelity evaluation: RUN AND HONEST (see below).** First
-trustworthy FID/PRDC/C2ST numbers this project has produced -- and they
-show the 200-epoch model does not yet closely match real data (C2ST
-~0.99-1.00 everywhere, PRDC precision ~0.000 everywhere). A real,
-previously-unnoticed gap in fidelity.py itself (FID computed in raw
-3584-dim space, not the classifier feature space its own docstring
-described) was found and fixed first -- confirmed the raw approach was
-numerically meaningless (same-distribution FID = 4939) before trusting
-any number from it. A real LR-schedule gap (no decay, ever) was also
-found and fixed; a longer run (500 epochs) with this one fix is in
-progress to see whether it closes the gap.
+**Real fidelity evaluation: TWO ROUNDS RUN, HONEST MIXED RESULT (see
+below).** 200-epoch baseline showed C2ST ~0.99-1.00 and PRDC precision
+~0.000 everywhere -- samples not yet close to real data. Found and fixed
+a real LR-schedule gap (no decay, ever) and reran at 500 epochs: FID
+improved for several modalities, but precision/C2ST did NOT meaningfully
+improve, and pathology recall got WORSE. Recorded honestly as a genuine,
+unresolved limitation at this stage rather than re-run toward a more
+flattering number. Next real levers identified: training data scale,
+guidance strength, DDIM step count.
 
 **Pathology, current decision point**: UNI (original plan) requires gated
 HuggingFace access, request submitted, approval pending (timeline
@@ -610,6 +608,58 @@ need to withstand scrutiny.
 LR schedule fix, in progress as of this writing. Re-run
 eval_fidelity_real.py against the result and compare directly against
 the table above once complete.
+
+---
+
+## 500-epoch run results: mixed, honestly reported, no clean win (2026-09-02)
+
+Generalization re-confirmed first (train 0.00420, val 0.00422 -- still
+essentially identical, no memorization at the longer duration either).
+
+Real fidelity comparison against the 200-epoch (no-decay) baseline:
+
+| modality | FID (200ep -> 500ep) | precision | recall (200ep -> 500ep) | C2ST (200ep -> 500ep) |
+|---|---|---|---|---|
+| joint | 18.67 -> 16.28 | 0.159 -> 0.136 (worse) | 0.906 -> 1.000 | 0.991 -> 0.983 |
+| geno | 0.75 -> 0.73 | 0.000 -> 0.000 | 0.184 -> 0.184 (identical) | 0.999 -> 1.000 |
+| rna | 1.05 -> 0.73 | 0.000 -> 0.000 | 0.138 -> 0.138 (identical) | 1.000 -> 0.999 |
+| path | 1.18 -> 0.34 | 0.000 -> 0.000 | 0.610 -> 0.000 (worse) | 1.000 -> 0.998 |
+| ehr | 2.34 -> 1.03 | 0.000 -> 0.000 | 0.013 -> 0.013 (identical) | 1.000 -> 1.000 |
+
+**Honest reading, not spun toward a positive framing**: FID genuinely
+improved for RNA, pathology, EHR, and modestly for joint -- real
+distributional-distance progress consistent with the LR fix helping
+convergence. But PRECISION remains exactly 0.000 across every modality
+in BOTH runs, and C2ST accuracy remains 0.98-1.00 everywhere in both
+runs -- the core sample-level fidelity problem (a real classifier can
+still nearly perfectly distinguish real from generated samples) did NOT
+resolve. Pathology's recall specifically got WORSE (0.610 -> 0.000), a
+real regression, not noise favoring the fix.
+
+**Flagged, not explained away**: geno/rna/ehr recall values are exactly
+identical between the two runs to three decimal places (0.184, 0.138,
+0.013) -- an unusual amount of coincidence for two genuinely different
+checkpoints trained with different schedules. No root cause identified
+yet. Does not change the overall honest conclusion (precision/C2ST both
+independently say samples do not yet closely match real data either
+way), but should be investigated -- possibly a PRDC recall
+implementation detail that is less sensitive to this particular kind of
+model change than expected, possibly something else -- before any of
+these numbers are treated as final for the paper.
+
+**Conclusion for this round**: the LR-decay fix was a real, isolated,
+worthwhile change (distributional shape improved) but is not sufficient
+on its own to close the sample-fidelity gap. Likely next levers, in
+rough order of expected impact: training data scale (3,836 real cases is
+small for a 67.7M-parameter MoDiT backbone -- CPTAC and Pfib_423 remain
+RNA-only and are not part of this joint training set at all, see Open
+items), classifier-free guidance strength at sampling time (not yet
+tuned, currently using whatever default sample_modit.py's ddim_sample
+applies), and DDIM step count (currently 200, worth checking whether
+more steps meaningfully changes precision specifically). This is a
+genuine, reportable limitation at this stage of the project, not a
+failure of the underlying approach -- recorded honestly rather than
+re-run repeatedly until a more flattering number appears.
 
 ---
 
