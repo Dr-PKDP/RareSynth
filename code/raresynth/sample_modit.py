@@ -57,7 +57,8 @@ def load_trained_model(checkpoint_path, device):
 
 
 def sample_unconditional(model, diffusion, spec, n_samples, tissue_dist,
-                         device, data_scale=1.0, n_steps=200, batch_size=64, seed=0):
+                         device, data_scale=1.0, n_steps=200, batch_size=64,
+                         seed=0, cfg_scale=2.0):
     """tissue_dist: dict of {project_name: fraction}, e.g. matching the
     real training set's tissue proportions -- so generated samples reflect
     the same tissue mix, not an arbitrary/uniform one.
@@ -90,7 +91,7 @@ def sample_unconditional(model, diffusion, spec, n_samples, tissue_dist,
             x = diffusion.ddim_sample(
                 model, (b, spec.total_dim), n_steps=n_steps,
                 avail=avail, tissue=tissue_idx, device=device,
-                generator=generator,
+                generator=generator, cfg_scale=cfg_scale,
             )
             x = x / data_scale  # back to the real embedding space
             all_x.append(x.cpu().numpy())
@@ -111,6 +112,10 @@ def main():
     ap.add_argument("--n-steps", type=int, default=200)
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--cfg-scale", type=float, default=2.0,
+                    help="classifier-free guidance scale; higher values "
+                         "extrapolate further beyond the unconditional "
+                         "prediction toward (and past) the conditional one")
     args = ap.parse_args()
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -128,11 +133,12 @@ def main():
     tissue_dist = {p: c / len(train_projects) for p, c in counts.items()}
     print(f"real training tissue distribution: {tissue_dist}")
 
-    print(f"\ngenerating {args.n_samples} unconditional samples...")
+    print(f"\ngenerating {args.n_samples} unconditional samples "
+         f"(cfg_scale={args.cfg_scale})...")
     x, tissue = sample_unconditional(
         model, diffusion, spec, args.n_samples, tissue_dist, dev,
         data_scale=data_scale, n_steps=args.n_steps,
-        batch_size=args.batch_size, seed=args.seed,
+        batch_size=args.batch_size, seed=args.seed, cfg_scale=args.cfg_scale,
     )
 
     out = Path(args.out)

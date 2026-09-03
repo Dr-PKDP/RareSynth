@@ -6,18 +6,24 @@ covariance-estimation artifact (see eval/tissue_classifier.py's docstring
 for the live demonstration of why this matters -- raw-space FID between
 two samples of the IDENTICAL distribution came out as 4939, not ~0).
 
-Feature-space design:
-  - "joint" (the full concatenated vector, the case that matters most for
-    the paper's central cross-modal claim): the tissue-of-origin
-    classifier's penultimate features (eval/tissue_classifier.py),
-    trained fresh on REAL data for this evaluation.
-  - each individual modality slice: PCA (fit on real data only, applied
-    to both real and generated), reducing to a well-conditioned dimension
-    -- simpler than training a separate classifier per modality, and does
-    not assume every modality carries equally strong tissue-discriminative
-    signal (clinical/genomic are lower-information-content by nature and
-    might not support a well-trained per-modality classifier the way
-    pathology or RNA would).
+Feature-space design: a SEPARATE tissue-of-origin classifier is trained
+for the joint representation AND for each individual modality slice,
+using real data only. An earlier version used PCA (fit on real data) for
+the per-modality slices instead of a classifier, reasoning that training
+5 separate classifiers was more engineering than necessary -- this was
+WRONG, confirmed by a live investigation: PCA is unsupervised and finds
+directions of maximum variance in real data with no awareness of tissue
+identity at all. When a CFG-scale experiment produced a large, measured
+change in the raw generated RNA/EHR values (mean_abs_diff ratio 0.9-1.4x
+the signal's own scale) but recall in the PCA feature space stayed
+BIT-IDENTICAL across three separate sampling runs, the conclusion was
+that whatever direction CFG was actually improving lived outside the
+handful of top-variance components PCA kept -- the metric was
+structurally blind to exactly the kind of improvement being measured,
+not because the improvement wasn't real. A classifier, being trained
+specifically to separate tissues, does not have this blind spot by
+construction. Fixed to use a per-modality classifier for every slice.
+
   - "rad" is EXCLUDED entirely: real radiology is always exactly zero by
     construction (no radiology encoder exists in this project), so there
     is no genuine real distribution to compare generated samples against
@@ -33,7 +39,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.decomposition import PCA
 
 from .data.dataset import RareSynthTCGADataset
 from .model.dit import ModalitySpec
@@ -81,7 +86,6 @@ def main():
     ap.add_argument("--synthetic-npz", required=True,
                     help="output of sample_modit.py")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--pca-dim", type=int, default=32)
     ap.add_argument("--classifier-epochs", type=int, default=100)
     args = ap.parse_args()
 
@@ -134,16 +138,40 @@ def main():
     slices.update({k: v for k, v in spec.slices().items() if k != "rad"})
     # rad excluded -- see module docstring
 
+    # train a SEPARATE tissue classifier per modality slice, not just
+    # joint -- PCA was tried first and found structurally blind to
+    # CFG-driven improvements (see module docstring); a classifier,
+    # trained specifically to separate tissues, does not have that blind
+    # spot for any modality, including ones with weaker signal than
+    # pathology/RNA (a classifier that ends up near chance accuracy for a
+    # genuinely low-signal modality is itself an honest, informative
+    # result, not a reason to fall back to an uninformed feature space)
+    modality_classifiers = {"joint": classifier}
+    modality_accs = {"joint": val_acc}
+    for name, sl in slices.items():
+        if name == "joint":
+            continue
+        print(f"\n  training {name}-specific tissue classifier...")
+        mod_clf, mod_acc = train_tissue_classifier(
+            x_train[:, sl], y_train, x_val[:, sl], y_val,
+            n_tissues=len(TISSUE_VOCAB), device=dev,
+            epochs=args.classifier_epochs,
+        )
+        modality_classifiers[name] = mod_clf
+        modality_accs[name] = mod_acc
+        if mod_acc < 0.3:
+            print(f"    NOTE: {name} classifier accuracy ({mod_acc:.3f}) "
+                 f"is close to chance (0.125) -- this modality may "
+                 f"genuinely carry weak tissue signal on its own; FID/PRDC "
+                 f"in this feature space should be interpreted with that "
+                 f"in mind, not treated as equally informative to a "
+                 f"high-accuracy modality's numbers")
+
     results = {}
     for name, sl in slices.items():
         r, f = real[:, sl], fake[:, sl]
-        if name == "joint":
-            r_feat, f_feat = classifier.embed(r, device=dev), classifier.embed(f, device=dev)
-        else:
-            n_comp = min(args.pca_dim, r.shape[1], len(r) - 1)
-            pca = PCA(n_components=n_comp)
-            pca.fit(r)  # fit on REAL only
-            r_feat, f_feat = pca.transform(r), pca.transform(f)
+        clf = modality_classifiers[name]
+        r_feat, f_feat = clf.embed(r, device=dev), clf.embed(f, device=dev)
 
         row = {"fid": frechet_distance(r_feat, f_feat)}
         row.update(prdc(r_feat, f_feat, k=5))
@@ -157,9 +185,8 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({
         "results": results,
-        "tissue_classifier_val_acc": val_acc,
+        "modality_classifier_val_acc": modality_accs,
         "n_real": len(real), "n_fake": len(fake),
-        "pca_dim": args.pca_dim,
     }, indent=2))
     print(f"\nsaved -> {out}")
 

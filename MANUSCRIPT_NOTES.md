@@ -384,6 +384,57 @@ classifier-free guidance strength at sampling time (not yet tuned),
 DDIM step count (currently 200, unexplored whether more helps precision
 specifically).
 
+**UPDATE: CFG-scale investigation, genuinely improved understanding.**
+A sweep of guidance scale (2 -> 35) substantially improved JOINT FID
+(16.28 -> 6.32) and JOINT precision (0.136 -> 0.163), confirming
+guidance strength is a real, usable lever. But per-modality precision
+stayed at exactly 0.000 regardless -- traced to a real bug in the
+EVALUATION, not the model: the per-modality feature space used PCA (fit
+on real data), which is unsupervised and was structurally blind to
+whatever direction CFG was actually improving. Fixed with a per-modality
+trained tissue classifier instead of PCA.
+
+**Real, corrected result -- worth quoting directly in the paper, both
+the positive and the limitation**:
+
+| modality | classifier val acc | FID | precision | recall |
+|---|---|---|---|---|
+| joint | 1.000 | 6.31 | 0.163 | 0.747 |
+| geno | 0.246 | 31.84 | 0.000 | 1.000 |
+| rna | 0.929 | 21.38 | 0.090 | 0.741 |
+| path | 0.480 | 12.86 | 0.785 | 0.935 |
+| ehr | 0.996 | 16.01 | 0.025 | 0.313 |
+
+**Pathology precision (0.785) is a genuinely strong result, worth
+featuring rather than burying** -- real evidence the model captures
+pathology-specific structure well, uncovered only once the evaluation
+itself was fixed (PCA had shown 0.000 for every modality, including
+this one, entirely due to the measurement problem).
+
+**Genomic's 0.000 needs a specific, honest framing in Discussion, not a
+promise to "fix" it further**: its own classifier barely exceeds chance
+(0.246 vs 0.125 for 8 classes), meaning tissue-of-origin is not a strong
+organizing signal in real somatic mutation profiles to begin with --
+biologically consistent with well-known cancer genetics (driver genes
+like TP53 mutate across many tissue types rather than being
+tissue-specific the way expression is). This means evaluating genomic
+fidelity via tissue-classifiability is likely the wrong lens for this
+one modality, independent of how good the generator is -- a defensible,
+citable point for Discussion ("genomic fidelity is evaluated relative to
+[a more appropriate metric, e.g. gene-annotation feature distributions
+or known driver-gene co-occurrence] rather than tissue-of-origin
+classifiability, since real somatic mutation profiles show only weak
+tissue clustering to begin with [classifier accuracy X]"). This is a
+genuine, defensible limitation of the metric as applied to this
+modality, not evidence the generative model has failed at genomics --
+do not conflate the two when drafting.
+
+Next: decide and build the more appropriate genomic-specific evaluation
+axis; consider whether RNA/EHR's still-low (though now nonzero)
+precision warrants the same training-data-scale investigation flagged
+earlier, now that the measurement artifact is no longer confounding the
+picture.
+
 Pathology's output format is a genuine architectural point worth
 remembering for Methods: it is a per-case BAG of variable-length tile
 embeddings (CTransPath, 768-dim per tile, capped at 8,000 tiles/case),

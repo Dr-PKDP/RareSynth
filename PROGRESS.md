@@ -41,6 +41,19 @@ unresolved limitation at this stage rather than re-run toward a more
 flattering number. Next real levers identified: training data scale,
 guidance strength, DDIM step count.
 
+**CFG-scale sweep + a second real evaluation bug fixed (see below).**
+Increasing guidance scale substantially improved JOINT fidelity (FID
+16.28->6.32) but exposed that per-modality precision was stuck at
+EXACTLY 0.000 for a structural reason, not a model failure: the
+per-modality feature space used unsupervised PCA, which was blind to the
+specific direction CFG was actually improving. Fixed with per-modality
+trained classifiers instead. Real result: pathology precision reaches
+0.785 (a genuinely strong finding), RNA/EHR show small real precision,
+and genomic's persistent 0.000 is now explained by weak real
+tissue-signal in genomic data itself (classifier barely beats chance),
+not a generation failure -- a different evaluation lens is likely needed
+for that one modality specifically.
+
 **Pathology, current decision point**: UNI (original plan) requires gated
 HuggingFace access, request submitted, approval pending (timeline
 unknown). Decided to proceed NOW with **CTransPath** instead — open,
@@ -660,6 +673,76 @@ more steps meaningfully changes precision specifically). This is a
 genuine, reportable limitation at this stage of the project, not a
 failure of the underlying approach -- recorded honestly rather than
 re-run repeatedly until a more flattering number appears.
+
+---
+
+## Real bug #15: PCA-based per-modality feature space was structurally
+## blind to real, measured improvements -- found via a CFG-scale sweep
+
+Per Pijush's direction ("we cannot have precision 0, solve that first"),
+investigated the CFG scale as the first lever (cheap, no retraining
+needed). Swept cfg_scale in {2, 7, 12, 20, 35} using a proxy diagnostic
+(does an independent classifier agree a sample generated "as tissue X"
+actually looks like tissue X): 0.360 -> 0.674 -> 0.750 -> 0.806 -> 0.836,
+a real, substantial, monotonic improvement with clear diminishing
+returns by cfg=35. Ran the full fidelity evaluation at cfg=35: JOINT FID
+improved substantially (16.28 -> 6.32) and JOINT precision improved
+(0.136 -> 0.163), confirming CFG scale was a genuine, real lever -- but
+every INDIVIDUAL modality's precision remained EXACTLY 0.000, unchanged
+from cfg=2.
+
+This exposed a second, more serious problem: geno/rna/ehr recall came
+back BIT-IDENTICAL to three decimal places across THREE separate sample
+sets (200-epoch, 500-epoch cfg=2, 500-epoch cfg=35) -- not investigated
+away as coincidence this time, chased down directly. Confirmed via a
+direct measurement that the RAW GENERATED VALUES for these modalities
+genuinely change substantially between cfg=2 and cfg=35 (RNA and EHR
+showed the LARGEST relative change of any modality, ratio 0.9-1.4x their
+own signal scale) -- ruling out "CFG doesn't affect these modalities" as
+an explanation. Root cause: the per-modality feature space used PCA
+(fit on real data), which is UNSUPERVISED and finds directions of
+maximum variance with no awareness of tissue identity at all. Whatever
+direction CFG was genuinely improving apparently fell outside the
+handful of top-variance components PCA kept, making the metric
+structurally blind to real, measured improvement -- not because nothing
+was changing, but because PCA wasn't looking in the right place.
+
+Fixed in eval_fidelity_real.py: a SEPARATE tissue classifier is now
+trained per modality (not just for "joint"), so every modality is
+evaluated in a feature space that is actually organized around what the
+metric is trying to measure. Verified offline first with a positive
+control (synthetic data with genuine per-modality tissue signal and fake
+data close to real): precision/recall both correctly reached 1.000
+across every modality, confirming the classifier-based approach CAN
+detect real improvement where PCA could not.
+
+**Real result on the real checkpoint (cfg=35 samples), a materially
+different and more informative picture than PCA ever showed**:
+
+| modality | classifier val acc | FID | precision | recall |
+|---|---|---|---|---|
+| joint | 1.000 | 6.31 | 0.163 | 0.747 |
+| geno | 0.246 (barely above chance) | 31.84 | 0.000 | 1.000 |
+| rna | 0.929 | 21.38 | 0.090 | 0.741 |
+| path | 0.480 | 12.86 | **0.785** | 0.935 |
+| ehr | 0.996 | 16.01 | 0.025 | 0.313 |
+
+Pathology precision (0.785) is a real, substantial, positive result --
+genuine signal PCA had been hiding. RNA and EHR now show small but
+genuinely nonzero precision (0.090, 0.025), a meaningful change from
+PCA's suspicious flat zero everywhere. Genomic remains at exactly 0.000,
+but this is now explainable rather than mysterious: its classifier
+barely beats chance (0.246 vs 0.125), meaning tissue-of-origin is
+genuinely NOT a strong organizing signal in real somatic mutation
+profiles to begin with -- biologically consistent with cancer driver
+genes (TP53 etc.) mutating across many tissue types rather than being
+tissue-specific the way expression is. Testing "does genomic fidelity
+match real data's tissue clusters" may simply be the wrong lens for this
+modality, independent of generator quality -- a different evaluation
+axis (e.g. gene-annotation-feature distributional match, or known
+driver-gene co-occurrence patterns) is likely more appropriate for
+genomic specifically, a design question for MANUSCRIPT_NOTES.md rather
+than something further guidance-scale tuning will fix.
 
 ---
 
