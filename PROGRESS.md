@@ -12,6 +12,28 @@ the debugging play-by-play.
 
 ---
 
+## STATUS AS OF 2026-09-05 — READ THIS FIRST
+
+All four encoders, assembly, and MoDiT training are complete and
+verified (train/val generalization confirmed, no memorization). Two
+independent external methodological reviews (2026-09-03) substantively
+corrected the evaluation approach -- see "External methodological
+review" and "PROJECT SCOPE DECISION" sections below for full detail.
+
+**Pijush has explicitly chosen full rigor** over a reduced scope. The
+complete roadmap (six phases, all cross-cutting items) is recorded under
+"PROJECT SCOPE DECISION" below -- read that section before assuming
+anything is close to finished. Most of Phases IV-VI and the entire
+ablation/privacy/Pfib_423-validation work have not started. This is
+expected given the scope chosen, not a sign of drift.
+
+**Immediate next step**: finish Phase I (evaluation validation -- real-
+vs-real baseline, negative controls, split-integrity audit, full
+classifier validation), then CMCS, then the actual thesis test
+(PPN + mechanism guidance + Pfib_423), per the agreed execution order.
+
+---
+
 ## Status as of 2026-09-01
 
 **Data acquisition: COMPLETE.** All planned sources downloaded and
@@ -746,6 +768,101 @@ than something further guidance-scale tuning will fix.
 
 ---
 
+## External methodological review, two independent reports (2026-09-03)
+
+A written summary of the precision investigation (bugs #14-15 above) was
+given to two independent AI reviewers acting as critical methodological
+referees. Both converged heavily on the same core critique despite being
+independent -- a real signal these are genuine gaps, not idiosyncratic
+nitpicks. Full review documents preserved at
+/mnt/user-data/uploads/Review_1-1.docx and Review_2-1.docx (this
+project's original session) for reference.
+
+**Central critique, both reviewers**: the investigation moved too fast
+from "the metric responded to a change" to "this is a real biological or
+generative-quality finding." Specifically:
+
+1. The classifier-based feature space measures TISSUE-CONDITIONAL
+   fidelity specifically (does a sample sit in a region the classifier
+   associates with the right cancer type), not general sample realism --
+   calling it "fidelity" unqualified overclaims what it establishes. PCA
+   was mischaracterized as a "bug" to remove; it answers a different,
+   complementary question (general distributional fidelity, tissue-
+   agnostic) and should have been RETAINED alongside the classifier view,
+   not replaced by it.
+2. No real-vs-real PRDC baseline was ever established -- without
+   splitting real held-out data in half and computing precision of one
+   half against the other, there is no reference point for judging
+   whether 0.785 or 0.000 is "good" or "bad" in this specific feature
+   space, at this specific sample size, with this specific k.
+3. Only ONE positive control was run (synthetic data constructed to be
+   close to real, correctly scoring near 1.0). No negative controls
+   (shuffled tissue labels, permuted cross-modal pairings, randomized
+   data, which should score LOW) were run -- a metric that only ever
+   says "good" has not been validated as discriminating correctly in
+   both directions.
+4. 100% real-data tissue-classifier accuracy should have triggered a
+   check for shortcut learning / batch-site artifacts (TCGA has known
+   technical/cohort structure), not just been accepted as "expected
+   biology" -- confusion matrices, macro-F1, balanced accuracy, and
+   confirmed patient-level (not tile-level) splitting were never
+   reported.
+5. CFG=35's tissue-agreement improvement was treated as unambiguous
+   progress without a multi-objective view -- high CFG is a KNOWN
+   failure mode for causing conditional overconcentration and diversity
+   loss (consistent with what was already observed: joint recall DROPPING
+   as CFG increased, 1.000 -> 0.701 in an earlier round, which was noted
+   as "expected CFG tradeoff" but not treated with the weight it
+   deserved).
+6. 200 real / 500 generated is adequate for debugging but too small for
+   final, stratified (8 cancer types), per-modality claims without
+   bootstrap confidence intervals.
+7. Specific overconfident language was flagged and quoted directly:
+   "pathology 0.785 is genuinely strong, real," "genomic 0.000 has a
+   real explanation," "GTEx is a clean opportunity," "nothing here
+   reflects confusion or directionless searching." All corrected in
+   MANUSCRIPT_NOTES.md with the reviewers' suggested more defensible
+   phrasing.
+8. **CMCS (cross-modal coherence) -- the paper's actual central claim --
+   has still never been run against real generated output.** Both
+   reviewers independently flagged this as the single most important
+   missing piece, ahead of any single-modality fidelity refinement:
+   fidelity numbers, however careful, do not test whether modalities are
+   correctly PAIRED within one generated patient record, which is the
+   entire point of the joint architecture.
+
+**Both reviewers, independently, explicitly said**: this does NOT
+require a conceptual restart or new architecture. The diagnostic logic
+so far (precision=0 -> test conditioning -> tune CFG -> verify the
+metric responds -> replace the representation -> investigate
+modality-specific failure) is sound and was praised specifically for not
+immediately treating precision=0 as model failure, for the nearest-
+neighbor geometric evidence, and for correctly recognizing tissue
+classification is the wrong genomic endpoint. The gap is evaluation
+RIGOR and INTERPRETATION discipline, not the underlying approach.
+
+**Proposed phased structure (review 2), adopted as the organizing frame
+going forward**: Phase I evaluation validation (real-vs-real, NN
+analysis, positive+negative controls, classifier validation) -> Phase II
+model diagnosis (tissue agreement, CFG sweep -- already done) -> Phase
+III metric validation (PCA vs classifier, synthetic controls -- partly
+done) -> Phase IV final fidelity evaluation (FROZEN evaluator, full
+sample size, PRDC quartet, FID, modality-specific) -> Phase V biological
+validation (genomic burden + mutation spectrum, clinical-text realism,
+cross-modal consistency/CMCS) -> Phase VI comparative evaluation
+(baselines, identical frozen protocol).
+
+**Concrete next steps, priority order**: (1) real-vs-real PRDC baseline;
+(2) negative controls alongside the existing positive control; (3)
+explicit patient-level split-integrity verification, especially for
+pathology; (4) run CMCS against real generated output for the first
+time; (5) full PRDC quartet with bootstrap CIs; (6) baselines under the
+identical frozen protocol. Not yet started as of this entry.
+
+---
+
+---
+
 ## Thread oversubscription — parallel pathology launch, severe, caught before real damage
 
 First launch of the 8-worker parallel pathology pipeline showed processes
@@ -994,28 +1111,120 @@ encoder), and CPTAC's DICOM path (openslide may not read these directly --
 
 ---
 
-## Open items (not yet done, roughly in expected order)
+## PROJECT SCOPE DECISION (2026-09-05) — read this before planning any work
 
-- [ ] Baseline comparisons and ablations against the trained MoDiT
-      checkpoint (/data/pduttapramanik/raresynth/runs/modit_full) --
-      training itself works and generalizes; nothing has been COMPARED
-      against yet. EMA tracking extended to GenomicSetEncoder/GatedABMIL
-      too (currently MoDiT-only, a reasonable scope for the first working
-      version, noted as a gap)
-- [ ] The paper's actual evaluation metrics (FID/PRDC/C2ST, CMCS, mechanism
-      retrieval, privacy) have not been computed on any trained model yet
-      -- the train/val loss check confirms generalization on the training
-      objective, not any downstream evaluation metric
-- [ ] CPTAC pathology (DICOM format — needs investigation, likely wsidicom)
-- [ ] CPTAC/Pfib_423 genomic+clinical (both TCGA-only so far; CPTAC's
-      project field needs its own tissue-mapping logic, not yet built)
-- [ ] Baseline implementations: CTGAN, TVAE, medGAN, TabDDPM, MMVAE, TotalVI
-      (MVAE/MoPoE/copula/flat-U-Net/independent-diffusion already built)
-- [ ] PPN training against LINCS/DepMap (data downloaded, training script
-      not yet built)
-- [ ] Mechanism-guidance energy live testing (guidance.py written and unit
-      tested against mocks only, never run against real trained components)
+**Pijush explicitly chose "Full rigor"** when presented with a choice
+between full rigor (every baseline, every ablation, everything both
+external reviews recommended) and a scoped-but-still-defensible reduced
+version. This is now the standing decision for the rest of the project --
+do not silently narrow scope without this being revisited explicitly.
+
+**Honest scope assessment given that choice**: the remaining work is
+comparable in size to everything built so far in this entire project,
+plausibly larger -- baselines, the ablation suite, PPN/guidance training,
+and the Pfib_423 external-validation test (the paper's actual central
+thesis) have not been empirically touched at all yet. No reliable
+calendar-time estimate exists; this should not be presented as smaller
+than it is.
+
+**Full roadmap, phased per the two external methodological reviews
+(2026-09-03)**:
+
+**Phase I -- Evaluation validation (IN PROGRESS)**
+- [ ] Real-vs-real PRDC baseline (split real held-out data in half,
+      compute precision/recall/density/coverage of one half against the
+      other) -- establishes what "good" looks like before any
+      generated-vs-real number can be interpreted at all
+- [ ] Negative controls: shuffled tissue labels, permuted cross-modal
+      pairings, randomized data (should all score LOW) -- only a
+      positive control exists so far, which only proves the metric can
+      detect an easy case, not that it correctly rejects bad ones
+- [ ] Patient-level split-integrity audit, explicitly verified (not
+      assumed) -- especially pathology tile/slide leakage across splits
+- [ ] Full classifier validation for every classifier used in any
+      metric: confusion matrices, macro-F1, balanced accuracy,
+      per-class sensitivity, repeated-split/cross-validation (currently
+      only raw accuracy is reported anywhere)
+
+**Phase II -- Model diagnosis (mostly done)**
+- [x] Tissue-conditioning check, CFG sweep (2->35)
+- [ ] Multi-objective CFG selection: diversity/coverage/privacy jointly,
+      not tissue accuracy alone -- CFG=35 should NOT be treated as
+      settled/optimal without this
+
+**Phase III -- Metric validation (partially done)**
+- [x] PCA vs. classifier comparison, real bug found and fixed (bug #15)
+- [ ] RETAIN PCA alongside the classifier view (task-agnostic vs
+      task-relevant/tissue-conditional) -- do not report the classifier
+      view as the sole or complete fidelity measure, per both reviews
+- [ ] Full control battery beyond the one positive control (see Phase I)
+
+**Phase IV -- Final fidelity evaluation (NOT started as "final")**
+- [ ] Declare an explicit evaluator freeze before running this phase --
+      no further feature-extractor/threshold/parameter changes based on
+      what the final numbers look like, to avoid post-hoc metric tuning
+- [ ] Full PRDC quartet (precision, recall, DENSITY, COVERAGE -- only
+      the first two have been reported anywhere so far)
+- [ ] Bootstrap confidence intervals, multiple k values (currently
+      single point estimates, single k=5)
+- [ ] Larger, cancer-type-stratified sample sizes (200-500 real/
+      generated was explicitly a debugging-scale experiment per both
+      reviews, not adequate for final per-cancer-type claims)
+
+**Phase V -- Biological validation (barely started)**
+- [ ] Genomic panel: mutation burden (RUN 2026-09 -- classifier accuracy
+      0.350 vs 0.333 chance, itself weak, confirming burden alone is
+      ALSO not sufficient, exactly as the reviews warned against relying
+      on one substitute endpoint) + gene-level + pathway-level +
+      conditional-association metrics, not burden alone
+- [ ] Clinical-text realism evaluation (not started)
+- [ ] **CMCS (cross-modal coherence) -- NOT STARTED AT ALL.** Both
+      external reviews independently flagged this as the single most
+      important missing piece, ahead of any further fidelity work: it
+      is the paper's actual central claim (do modalities pair correctly
+      within one generated patient) and fidelity metrics, however
+      careful, do not test this
+- [ ] **Pfib_423 external validation -- NOT STARTED.** This is the
+      paper's actual thesis test (does mechanism structure learned from
+      cancer data transfer to real rare disease at sampling time). Blocked
+      on PPN training (not built) and mechanism-guided sampling being
+      wired up and tested against a real trained model (guidance.py
+      exists, unit-tested against mocks only, never run for real)
+
+**Phase VI -- Comparative evaluation (NOT started)**
+- [ ] MVAE/MoPoE/copula/flat-U-Net/independent-diffusion: code exists,
+      but only ever run on SIMULATED smoke-test data -- never trained on
+      this project's real assembled data
+- [ ] CTGAN/TVAE/medGAN/TabDDPM: do not exist in this codebase at all,
+      need to be built from scratch
+- [ ] All baselines must run under the IDENTICAL frozen protocol as
+      MoDiT (same splits, same preprocessing, same evaluation code) for
+      a fair comparison -- per review 2's explicit point that complex
+      models do not automatically win, so this comparison must be clean
+
+**Cross-cutting, not neatly in one phase**
+- [ ] Ablation suite: guidance on/off, cross-modal-prior removal,
+      MoDiT-vs-flat-U-Net (same data), HPO-conditioning removal,
+      leave-one-modality-out, leave-one-cancer-type-out,
+      synthetic-sample-count scaling -- essentially none run yet
+- [ ] Privacy: membership inference, distance-to-closest-record -- code
+      exists (eval/privacy.py), never run against real generated output
+- [ ] CPTAC pathology (DICOM format, needs wsidicom investigation)
+- [ ] CPTAC/Pfib_423 genomic+clinical (both TCGA-only so far)
+- [ ] GTEx integration, IF pursued -- reviews explicitly warned this
+      needs its own source-aware harmonization/confounding study
+      (TCGA vs GTEx are different consortia, different pipelines --
+      real potential confound, not simply "more clean data"), corrected
+      away from the earlier, overconfident "clean opportunity" framing
 - [ ] Real STRING/GO gene embedding to replace the fixed-seed random
-      placeholder in gene_vocabulary.py (stated limitation, not urgent --
-      same gene_index contract, drop-in swap whenever pursued)
+      placeholder in gene_vocabulary.py (stated limitation, low urgency)
+
+**Proposed execution order** (Pijush to confirm/adjust): (1) finish
+Phase I properly, (2) run CMCS for the first time, (3) PPN training +
+mechanism-guided sampling + Pfib_423 evaluation -- the actual thesis
+test, (4) baselines (Phase VI), (5) ablation suite, (6) privacy, (7)
+write-up (Results/Discussion/Abstract, all still empty pending real
+numbers).
+
+---
 
