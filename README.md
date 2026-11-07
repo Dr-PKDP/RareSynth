@@ -14,6 +14,8 @@ Inputs, placed under `data/raw/`:
 | LINCS L1000 GSE92742: `Level5_COMPZ.MODZ_n473647x12328.gctx`, `sig_info.txt.gz`, `gene_info.txt.gz` | `mechanism/lincs/` |
 | GTEx v8 `gene_reads.gct.gz` and `Annotations_SampleAttributesDS.txt` | `gtex/` |
 | Pfib_423 gene-count matrices and sample annotations (non-strand-specific and strand-specific) | `pfib423/` |
+| Perturb-seq K562 essential-gene screen, processed file `ReplogleWeissman2022_K562_essential.h5ad` (https://zenodo.org/records/10044268/files/ReplogleWeissman2022_K562_essential.h5ad) | `perturbseq/` |
+| Perturb-seq RPE1 raw single-cell file `rpe1_raw_singlecell_01.h5ad` (https://ndownloader.figshare.com/files/35775606), saved as `Replogle2022_RPE1_raw_singlecell.h5ad` | `perturbseq/` |
 
 ## Run order
 
@@ -83,6 +85,27 @@ python code/heldout/gene_label_control.py score --primary-sha $SHA
 python code/heldout/ufm1_expression_check.py
 ```
 
+**6. Perturb-seq comparison** (`perturbseq/`; Supplementary Information S5; Replogle et al., Cell 185, 2559 (2022), https://doi.org/10.1016/j.cell.2022.05.013)
+```
+D=data/raw/mechanism/ppn_extracted; L=data/raw/mechanism/lincs; R=runs/perturbseq_validation
+K=data/raw/perturbseq/ReplogleWeissman2022_K562_essential.h5ad
+python code/perturbseq/extract_lincs_shrna.py $L $D
+
+# embedding space (K562)
+python code/perturbseq/perturbseq_pseudobulk.py $K data/embeddings/perturbseq_k562/h5ad_input/cohort.h5ad 100
+python code/perturbseq/perturbseq_embed.py tools/Geneformer data/embeddings/perturbseq_k562
+python code/perturbseq/perturbseq_score.py data/embeddings/perturbseq_k562/rna_embeddings.npz runs/pfib_test/guidance_by_gene.npz $D/ufm1_rna_embedding_guidance.npz $R/result.json
+
+# gene space and calibration (K562)
+python code/perturbseq/perturbseq_genespace.py $K $D/ufm1_guidance_direction.npz $L $R/genespace.json
+python code/perturbseq/perturbseq_calibration.py $K $D/trt_sh_matrix.npz $D/trt_sh_metadata.csv $L/GSE92742_Broad_LINCS_gene_info.txt.gz $R/calibration.json
+
+# RPE1 (original release file converted to the same format; minimum 30 cells per perturbation)
+python code/perturbseq/convert_rpe1.py data/raw/perturbseq/Replogle2022_RPE1_raw_singlecell.h5ad data/raw/perturbseq/Replogle2022_RPE1.h5ad
+MINC=30 python code/perturbseq/perturbseq_genespace.py data/raw/perturbseq/Replogle2022_RPE1.h5ad $D/ufm1_guidance_direction.npz $L $R/genespace_rpe1.json
+MINC=30 python code/perturbseq/perturbseq_calibration.py data/raw/perturbseq/Replogle2022_RPE1.h5ad $D/trt_sh_matrix.npz $D/trt_sh_metadata.csv $L/GSE92742_Broad_LINCS_gene_info.txt.gz $R/calibration_rpe1.json
+```
+
 ## Layout
 
 ```
@@ -90,7 +113,7 @@ code/raresynth/     package: model (DiT, diffusion), eval (fidelity metrics), da
 code/mechanism/     UFM1 direction, mapping to embedding space, GTEx fibroblast reference
 code/experiments/   generator training, guidance, steering comparison, test-split evaluation
 code/heldout/       Pfib_423 cohort file, primary and secondary analyses, controls
-code/perturbseq/    Perturb-seq comparison of the mapped direction (Supplementary Information S5)
+code/perturbseq/    Perturb-seq comparison of the mapped direction, LINCS shRNA extraction (Supplementary Information S5)
 code/MANIFEST.sha256
 data/manifests/     TCGA GDC manifest, TCGA and Pfib_423 case indexes
 ```
