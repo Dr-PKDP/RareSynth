@@ -90,6 +90,7 @@ code/raresynth/     package: model (DiT, diffusion), eval (fidelity metrics), da
 code/mechanism/     UFM1 direction, mapping to embedding space, GTEx fibroblast reference
 code/experiments/   generator training, guidance, steering comparison, test-split evaluation
 code/heldout/       Pfib_423 cohort file, primary and secondary analyses, controls
+code/perturbseq/    Perturb-seq comparison of the mapped direction (Supplementary Information S5)
 code/MANIFEST.sha256
 data/manifests/     TCGA GDC manifest, TCGA and Pfib_423 case indexes
 ```
