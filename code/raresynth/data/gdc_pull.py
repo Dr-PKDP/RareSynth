@@ -1,35 +1,4 @@
-"""
-GDC (TCGA) download script — Phase 2 and part of Phase 5.
-
-Etiquette
----------
-GDC is a shared NCI resource used by the whole cancer-genomics community. This
-script is deliberately conservative:
-  - sequential batches, not parallel connections (--workers defaults to 1)
-  - a fixed delay between batches
-  - small batch size (default 50 files) so a network hiccup loses minutes,
-    not hours
-  - full resumability: every completed file ID is logged, and reruns skip
-    them, so an interrupted overnight job just picks up where it left off
-  - a standard descriptive User-Agent identifying the script, not a browser
-    spoof
-
-Usage
------
-    # 1. Build the manifest (fast, just metadata)
-    python -m raresynth.data.gdc_pull manifest --projects TCGA-BRCA TCGA-LUAD \
-        --out /data/pduttapramanik/raresynth/data/manifests/tcga_manifest.json
-
-    # 2. Download RNA-seq + MAF + clinical (small, run first)
-    python -m raresynth.data.gdc_pull download --manifest tcga_manifest.json \
-        --types rna maf clinical \
-        --out /data/pduttapramanik/raresynth/data/raw/tcga
-
-    # 3. Download a stratified slide subset (large, run overnight)
-    python -m raresynth.data.gdc_pull download --manifest tcga_manifest.json \
-        --types slide --case-list slide_subset_cases.txt \
-        --out /data/pduttapramanik/raresynth/data/raw/tcga/slides
-"""
+"""Build a GDC manifest for TCGA projects and download the selected file types in sequential, resumable batches."""
 
 from __future__ import annotations
 
@@ -59,18 +28,6 @@ def _session():
 
 
 def build_manifest(projects, out_path, session=None, page_size=2000):
-    """Index open-access files across the requested TCGA projects.
-
-    Metadata-only: this is cheap and does not need the same throttling as the
-    bulk data endpoint, but it still uses one session with a descriptive UA.
-
-    GDC paginates every /files response. A single request capped at
-    page_size silently truncates to whatever the cap is -- confirmed on a
-    real run, where every one of four data types independently returned
-    exactly page_size=2000 files, which is what a truncation looks like, not
-    what a coincidence looks like. This loops using GDC's own
-    pagination.total field until every page is retrieved.
-    """
     s = session or _session()
     manifest = {}
     for data_type, gdc_type in DATA_TYPE_MAP.items():
@@ -104,8 +61,8 @@ def build_manifest(projects, out_path, session=None, page_size=2000):
             all_hits.extend(hits)
             frm += len(hits)
             if not hits:
-                break  # safety valve against an infinite loop on an API change
-            time.sleep(0.3)  # be polite between pages, not just between data types
+                break
+            time.sleep(0.3)
 
         for h in all_hits:
             for c in h.get("cases", []):
@@ -124,7 +81,7 @@ def build_manifest(projects, out_path, session=None, page_size=2000):
                 })
         print(f"  {data_type:10s} ({gdc_type}): {len(all_hits)} files indexed "
              f"(GDC reports {total} total)", flush=True)
-        time.sleep(1.0)  # be polite between the four metadata queries too
+        time.sleep(1.0)
 
     Path(out_path).write_text(json.dumps(manifest, indent=2))
     n_rna_slide = sum(1 for v in manifest.values()
@@ -159,21 +116,6 @@ def _mark_failed(log_path, batch_idx, error):
 
 def size_aware_batches(records, max_batch_bytes=1_500_000_000, max_batch_count=50,
                        default_size=50_000_000):
-    """Group records so cumulative size stays under max_batch_bytes.
-
-    RNA-seq/MAF/clinical files are KB-MB; whole-slide images are commonly
-    hundreds of MB to several GB EACH. A fixed file-count batch size that
-    works fine for small files can put 10-20+ GB into a single POST for
-    slides, and something on the network path (proxy, load balancer, WAF)
-    can then cut the response short deterministically -- every retry hits
-    the same cap and fails the same way, which is what happened here: 13 of
-    the first 33 slide batches died identically on tar decompression despite
-    full retry-with-backoff. Batching by byte budget instead of item count
-    fixes this for both data types without needing to special-case slides.
-
-    A single file larger than max_batch_bytes still goes out alone rather
-    than being skipped, since GDC will serve it as its own request either way.
-    """
     batch, batch_bytes = [], 0
     for r in records:
         sz = r.get("size") or default_size
@@ -188,15 +130,6 @@ def size_aware_batches(records, max_batch_bytes=1_500_000_000, max_batch_count=5
 
 
 def _is_gzip(path):
-    """GDC's /data endpoint returns a tar.gz only when multiple files are
-    requested. Request exactly one file and it streams the raw file back
-    directly -- confirmed by hand: a single slide came back as a bare TIFF
-    (SVS is TIFF-based), not an archive, with Content-Type
-    application/octet-stream in both cases so the header does not
-    distinguish them. Detecting by the gzip magic bytes (1f 8b) is robust to
-    this regardless of how a batch ended up at size 1, whether from the
-    size-aware batching or from bisection landing on a single oversized file.
-    """
     with open(path, "rb") as fh:
         return fh.read(2) == b"\x1f\x8b"
 
@@ -205,24 +138,6 @@ def download_files(file_records, out_dir, log_path, batch_size=50,
                    delay_sec=2.0, session=None, verify_md5=True,
                    max_retries=5, base_backoff=10.0,
                    max_batch_bytes=1_500_000_000):
-    """Sequential, resumable, rate-limited download via the GDC bulk endpoint.
-
-    file_records: list of dicts with file_id, file_name, md5sum, size.
-
-    Batches are formed by size_aware_batches(), so ``batch_size`` now acts
-    only as an upper bound on item count per batch (max_batch_count); the
-    byte budget (max_batch_bytes) is what actually keeps any single request
-    to a size the network path can reliably deliver in one shot.
-
-    A single connection drop used to crash the whole run and leave nothing
-    marked done for that batch. That is a real failure mode on a link this
-    long (laptop -> jump host -> destination -> internet -> GDC) and cannot
-    be tolerated across ~14,000 files. Each batch now gets up to
-    ``max_retries`` attempts with exponential backoff before being logged as
-    failed and skipped, so one bad batch costs minutes, not the whole job.
-    A partially written .tar.gz from a failed attempt is deleted before
-    retrying so it can never be fed to tar as if it were complete.
-    """
     s = session or _session()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -236,12 +151,6 @@ def download_files(file_records, out_dir, log_path, batch_size=50,
     state = {"n_fail": 0, "n_done": 0, "counter": 0}
 
     def attempt(batch, tag, depth=0):
-        """Try one batch; on exhausted retries, bisect and recurse rather
-        than giving up outright. This converges to whatever request size the
-        network path actually tolerates without needing that size guessed
-        correctly up front -- if even a byte-budgeted batch keeps failing
-        identically, splitting it is the general fix.
-        """
         state["counter"] += 1
         raw_path = out / f"_batch_{state['counter']:06d}_{tag}.download"
         ids = [r["file_id"] for r in batch]
@@ -266,20 +175,12 @@ def download_files(file_records, out_dir, log_path, batch_size=50,
                                    check=True)
                     raw_path.unlink()
                 elif len(batch) == 1:
-                    # GDC streams a single requested file back raw, not as a
-                    # tar.gz. Recreate the same on-disk layout tar would have
-                    # produced (a per-file-id directory) so downstream code
-                    # does not need to care which path a file took here.
                     rec = batch[0]
                     dest_dir = out / rec["file_id"]
                     dest_dir.mkdir(parents=True, exist_ok=True)
                     dest = dest_dir / (rec.get("file_name") or f"{rec['file_id']}.bin")
                     raw_path.rename(dest)
                 else:
-                    # more than one file requested but the response is not
-                    # gzip: not a case GDC's documented behavior predicts.
-                    # Treat as a failure so retry/bisection handles it rather
-                    # than silently mis-saving multi-file content.
                     raw_path.unlink()
                     raise ValueError(
                         f"batch of {len(batch)} files returned non-gzip content "
@@ -303,7 +204,7 @@ def download_files(file_records, out_dir, log_path, batch_size=50,
                     subprocess.CalledProcessError,
                     ValueError) as e:
                 if raw_path.exists():
-                    raw_path.unlink()  # never leave a partial/mismatched file behind
+                    raw_path.unlink()
                 if attempt_n == max_retries:
                     if len(batch) > 1:
                         print(f"  [{tag}] {len(batch)} files "

@@ -1,31 +1,4 @@
-"""
-Gaussian diffusion over multimodal latents, with two guidance channels.
-
-Two things are separated here that the original draft conflated:
-
-1. *Classifier-free guidance* on the semantic condition (HPO terms, causal
-   gene, tissue).  This sharpens generation toward the requested phenotype and
-   is standard.
-
-2. *Mechanism guidance* -- a gradient term  -s * grad_x E(x; g, t_tissue)
-   injected into the reverse process, where E is a differentiable
-   mechanism-consistency energy (see guidance.py).  This is what carries
-   rare-disease specificity.
-
-The point of (2) is that the diffusion model itself is trained only on **real**
-embeddings (TCGA, GTEx, CPTAC).  In the original design the model was trained
-on PPN/CPM output, so its distribution was upper-bounded by the PPN/CPM
-distribution and the diffusion stage added nothing that could not be obtained
-by sampling the MLPs directly and adding noise.  Moving the mechanism to
-sampling time removes that circularity: the prior is real data, the
-perturbation is a steering force, and the guidance scale s gives a continuous
-ablation axis from s = 0 (pure real-data prior) upward.
-
-Also implemented: inpainting-style conditional sampling for missing-modality
-imputation, following the replacement scheme of Lugmayr et al. (RePaint) --
-observed modality slices are re-noised to the current level at every step so
-that the generated modalities are conditioned on them.
-"""
+"""Gaussian diffusion with a cosine schedule, EMA weights and DDIM sampling with optional energy guidance."""
 
 from __future__ import annotations
 
@@ -39,10 +12,6 @@ def cosine_alpha_bar(T: int, s: float = 0.008, device="cpu"):
     steps = torch.arange(T + 1, dtype=torch.float64, device=device) / T
     f = torch.cos((steps + s) / (1 + s) * math.pi / 2) ** 2
     ab = f / f[0]
-    # The floor matters: DDIM recovers x0 as (x - sqrt(1-ab)*eps)/sqrt(ab), so an
-    # alpha_bar of 1e-8 multiplies the epsilon-prediction error by 1e4 at the
-    # first sampling step and the trajectory never recovers. 1e-4 keeps the
-    # amplification bounded at ~100x, which the x0 clamp then absorbs.
     return ab.clamp(1e-4, 1.0)
 
 
@@ -52,7 +21,7 @@ class GaussianDiffusion:
         if schedule != "cosine":
             raise ValueError("only the cosine schedule is implemented")
         ab = cosine_alpha_bar(T, device=device)
-        self.alpha_bar = ab[1:].float()                 # \bar{alpha}_t, t = 1..T
+        self.alpha_bar = ab[1:].float()
         self.alpha_bar_prev = ab[:-1].float()
         self.betas = (1 - ab[1:] / ab[:-1]).clamp(0, 0.999).float()
         self.alphas = 1.0 - self.betas
@@ -64,7 +33,6 @@ class GaussianDiffusion:
         self.device = device
         return self
 
-    # -- forward ---------------------------------------------------------
     def q_sample(self, x0, t, noise=None):
         noise = torch.randn_like(x0) if noise is None else noise
         ab = self.alpha_bar[t].view(-1, *([1] * (x0.dim() - 1)))
@@ -80,14 +48,6 @@ class GaussianDiffusion:
         tissue=None,
         loss_weights=None,
     ):
-        """Simple epsilon-MSE loss.
-
-        ``loss_weights`` optionally reweights the coordinate-wise loss per
-        modality.  Modalities differ in dimensionality by a factor of two, so
-        an unweighted MSE gives pathology (1024 dims) twice the gradient of
-        radiology (512 dims) purely from dimension count.  Weighting by
-        1/d_m equalises per-modality contribution.
-        """
         B = x0.shape[0]
         t = torch.randint(0, self.T, (B,), device=x0.device)
         x_t, noise = self.q_sample(x0, t)
@@ -97,7 +57,6 @@ class GaussianDiffusion:
             se = se * loss_weights.view(1, -1)
         return se.mean(), {"t_mean": t.float().mean().item()}
 
-    # -- reverse ---------------------------------------------------------
     @torch.no_grad()
     def _eps_with_cfg(self, model, x, t, cfg_scale, **kw):
         if cfg_scale is None or cfg_scale == 1.0:
@@ -127,16 +86,6 @@ class GaussianDiffusion:
         return_trajectory=False,
         x0_clip: float | None = 4.0,
     ):
-        """Deterministic (eta=0) DDIM sampling with optional mechanism guidance.
-
-        x_obs / obs_mask
-            For conditional imputation.  ``obs_mask`` is a (B, D) 0/1 tensor
-            marking observed coordinates; at each step the observed slice of
-            x_t is replaced by a correctly-noised version of x_obs.
-        guidance
-            Callable ``E(x0_hat, **guidance_kwargs) -> scalar tensor``.  Its
-            gradient w.r.t. x0_hat is subtracted from the predicted x0.
-        """
         device = device or self.device
         gkw = guidance_kwargs or {}
         kw = dict(avail=avail, c_hpo=c_hpo, c_gene=c_gene, tissue=tissue)
@@ -168,8 +117,6 @@ class GaussianDiffusion:
                     xg = x0_hat.detach().requires_grad_(True)
                     energy = guidance(xg, **gkw)
                     (grad,) = torch.autograd.grad(energy.sum(), xg)
-                # scale the step by sqrt(1 - ab_t): guidance is strongest early
-                # (high noise) and tapers as the sample resolves
                 x0_hat = x0_hat - guidance_scale * (1 - ab_t).sqrt() * grad
                 if x0_clip is not None:
                     x0_hat = x0_hat.clamp(-x0_clip, x0_clip)
@@ -197,18 +144,6 @@ class GaussianDiffusion:
 
 
 class EMA:
-    """Exponential moving average of model weights, with warmup.
-
-    The warmup is not cosmetic.  A fixed decay of 0.9999 has an effective
-    averaging window of 1/(1-d) = 10,000 steps, so after 8,550 steps the
-    shadow weights are still 0.9999^8550 = 0.43, i.e. 43% initialisation.
-    Sampling from that checkpoint produces a distribution that saturates the
-    x0 clamp and looks exactly like a diverging sampler, which is a
-    time-consuming thing to misdiagnose.  Ramping the decay as
-    (1+step)/(10+step) capped at ``decay`` makes the average behave like a
-    running mean early and like the requested EMA once enough steps have
-    accumulated.
-    """
 
     def __init__(self, model, decay=0.9999, warmup=True):
         self.decay = decay

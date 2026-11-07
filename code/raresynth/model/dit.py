@@ -1,30 +1,4 @@
-"""
-MoDiT: modality-token diffusion transformer for multimodal biomedical latents.
-
-Design rationale
-----------------
-The original RareSynth denoiser was a 1-D U-Net applied to the concatenation
-[z_geno ; z_rna ; z_path ; z_rad ; z_ehr] in R^3328.  A 1-D convolution over
-that vector treats the coordinate index as a spatial axis, which it is not:
-coordinate 47 and coordinate 48 of a Geneformer [CLS] embedding have no
-adjacency relationship, and the receptive field of a stride-2 stack crosses
-modality boundaries as though they were neighbouring pixels.
-
-MoDiT instead projects each modality latent to a shared width d_model and
-treats the five modalities as five tokens.  Cross-modal structure is then
-modelled by self-attention between tokens, which is permutation-aware,
-respects modality boundaries, and handles a missing modality by masking a
-token rather than by zero-filling a slice of a convolution input.
-
-Conditioning uses adaLN-Zero (Peebles & Xie, DiT): the timestep and condition
-embedding produce per-block scale/shift/gate parameters, with the gate
-initialised at zero so every block starts as an identity map.
-
-Missing modalities are first-class.  Radiology is available for only a
-minority of TCGA cases, so the model is trained with random modality dropout
-and an explicit availability mask; the same mechanism gives conditional
-imputation at sampling time for free.
-"""
+"""Diffusion transformer over a latent vector split into modality slots, with tissue conditioning."""
 
 from __future__ import annotations
 
@@ -36,26 +10,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# --------------------------------------------------------------------------
-# Modality specification
-# --------------------------------------------------------------------------
-
 @dataclass
 class ModalitySpec:
-    """Ordered specification of the modality latents the model operates on.
-
-    ``dims`` maps a modality name to the dimensionality of its frozen-encoder
-    latent.  Order is fixed and defines token order and slice offsets.
-    """
 
     dims: dict = field(
         default_factory=lambda: {
             "geno": 512,
-            "rna": 768,   # Geneformer's real confirmed output dim -- the
-                          # original spec assumed 512 before any real
-                          # encoder had been run; fixed to match reality
-                          # (verified: rna_tcga_full.npz etc. all show
-                          # shape (N, 768))
+            "rna": 768,
             "path": 1024,
             "rad": 512,
             "ehr": 768,
@@ -82,19 +43,13 @@ class ModalitySpec:
         return out
 
     def split(self, x: torch.Tensor):
-        """(B, total_dim) -> list of (B, d_m) in modality order."""
         return list(torch.split(x, list(self.dims.values()), dim=-1))
 
     def join(self, parts):
         return torch.cat(parts, dim=-1)
 
 
-# --------------------------------------------------------------------------
-# Embeddings
-# --------------------------------------------------------------------------
-
 def timestep_embedding(t: torch.Tensor, dim: int, max_period: int = 10000):
-    """Sinusoidal embedding of a (B,) integer timestep tensor."""
     half = dim // 2
     freqs = torch.exp(
         -math.log(max_period)
@@ -109,18 +64,6 @@ def timestep_embedding(t: torch.Tensor, dim: int, max_period: int = 10000):
 
 
 class ConditionEncoder(nn.Module):
-    """Builds the global conditioning vector from timestep and side information.
-
-    Condition components
-      - t              diffusion timestep
-      - c_hpo          pooled HPO-term embedding (from a frozen biomedical LM)
-      - c_gene         causal-gene embedding (STRING/GO knowledge-graph vector)
-      - c_tissue       tissue-of-origin index
-
-    Classifier-free guidance is supported by dropping the *whole* semantic
-    condition (hpo + gene + tissue) with probability ``p_uncond`` during
-    training and substituting a learned null embedding.
-    """
 
     def __init__(
         self,
@@ -137,7 +80,7 @@ class ConditionEncoder(nn.Module):
         )
         self.hpo_proj = nn.Linear(d_hpo, d_model)
         self.gene_proj = nn.Linear(d_gene, d_model)
-        self.tissue_emb = nn.Embedding(n_tissues + 1, d_model)  # last index = unknown
+        self.tissue_emb = nn.Embedding(n_tissues + 1, d_model)
         self.null_sem = nn.Parameter(torch.zeros(d_model))
         self.merge = nn.Sequential(
             nn.Linear(d_model, d_model), nn.SiLU(), nn.Linear(d_model, d_model)
@@ -173,10 +116,6 @@ class ConditionEncoder(nn.Module):
         return t_emb + sem
 
 
-# --------------------------------------------------------------------------
-# Transformer block with adaLN-Zero
-# --------------------------------------------------------------------------
-
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
@@ -207,24 +146,7 @@ class MoDiTBlock(nn.Module):
         return x
 
 
-# --------------------------------------------------------------------------
-# MoDiT
-# --------------------------------------------------------------------------
-
 class MoDiT(nn.Module):
-    """Noise-prediction network over modality tokens.
-
-    Parameters
-    ----------
-    spec        modality specification (dimensions and order)
-    d_model     token width
-    depth       number of transformer blocks
-    n_heads     attention heads
-    tokens_per_modality
-        A modality latent may be split into several tokens so that wider
-        modalities (path: 1024, ehr: 768) get proportionally more capacity.
-        Set to 1 for the minimal five-token model.
-    """
 
     def __init__(
         self,
@@ -245,9 +167,6 @@ class MoDiT(nn.Module):
         self.d_model = d_model
         M = self.spec.n_modalities
 
-        # per-modality in/out projections (each modality has its own head:
-        # the latents come from different frozen encoders and are not
-        # commensurable, so weight sharing across modalities is not assumed)
         self.in_proj = nn.ModuleList(
             [nn.Linear(d, d_model * self.tpm) for d in self.spec.dims.values()]
         )
@@ -258,10 +177,8 @@ class MoDiT(nn.Module):
             nn.init.zeros_(lin.weight)
             nn.init.zeros_(lin.bias)
 
-        # learned modality-type and intra-modality position embeddings
         self.mod_emb = nn.Parameter(torch.randn(M, d_model) * 0.02)
         self.pos_emb = nn.Parameter(torch.randn(self.tpm, d_model) * 0.02)
-        # embedding added to tokens of a modality that is absent for this sample
         self.missing_emb = nn.Parameter(torch.randn(d_model) * 0.02)
 
         self.cond = ConditionEncoder(d_model, d_hpo, d_gene, n_tissues, p_uncond)
@@ -273,9 +190,7 @@ class MoDiT(nn.Module):
         nn.init.zeros_(self.final_ada[1].weight)
         nn.init.zeros_(self.final_ada[1].bias)
 
-    # -- helpers ---------------------------------------------------------
     def tokenize(self, x, avail):
-        """(B, total_dim) -> (B, M*tpm, d_model)."""
         parts = self.spec.split(x)
         toks = []
         for m, (p, proj) in enumerate(zip(parts, self.in_proj)):
@@ -293,7 +208,6 @@ class MoDiT(nn.Module):
             [proj(h[:, m]) for m, proj in enumerate(self.out_proj)]
         )
 
-    # -- forward ---------------------------------------------------------
     def forward(
         self,
         x_t,
@@ -304,13 +218,6 @@ class MoDiT(nn.Module):
         tissue=None,
         force_uncond=False,
     ):
-        """Predict the noise added to x_0.
-
-        avail : (B, M) float tensor, 1 = modality observed, 0 = missing.
-                Missing modalities are still denoised (that is how imputation
-                works); the mask tells the network which tokens carry real
-                conditioning information.
-        """
         B = x_t.shape[0]
         if avail is None:
             avail = torch.ones(B, self.spec.n_modalities, device=x_t.device)

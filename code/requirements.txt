@@ -1,0 +1,10 @@
+numpy
+scipy
+pandas
+scikit-learn
+torch
+anndata
+requests
+mygene
+cmapPy
+geneformer

@@ -1,29 +1,4 @@
-"""
-Parse GDC's STAR-counts RNA-seq TSV format into a clean gene -> TPM dict.
-
-File shape (confirmed against a real downloaded file, not assumed):
-
-    # gene-model: GENCODE v36
-    gene_id\tgene_name\tgene_type\tunstranded\tstranded_first\tstranded_second\ttpm_unstranded\tfpkm_unstranded\tfpkm_uq_unstranded
-    N_unmapped\t1119332\t1119332\t1119332
-    N_multimapping\t4161493\t4161493\t4161493
-    N_noFeature\t3363885\t28590771\t28547217
-    N_ambiguous\t5128483\t1241035\t1244999
-    ENSG00000000003.15\tTSPAN6\tprotein_coding\t3473\t1768\t1705\t54.5637\t16.3336\t16.0655
-    ...
-
-Three things a naive parser gets wrong here:
-  1. Line 1 is a comment, not data.
-  2. The four "N_*" summary rows have only 4 columns (id + 3 counts), not the
-     9 columns real gene rows have -- a fixed-width parse breaks on these.
-  3. gene_id carries a version suffix (".15") that will not match a gene
-     index, gene embedding table, or Geneformer token map built from
-     unversioned Ensembl IDs unless it is stripped first.
-
-GDC's own guidance is to use tpm_unstranded for cross-project comparability
-(the workflow is unstranded by default; stranded columns exist but are not
-the primary output). We follow that here.
-"""
+"""Parser for GDC STAR gene-count files."""
 
 from __future__ import annotations
 
@@ -37,17 +12,9 @@ def strip_ensembl_version(gene_id: str) -> str:
 
 
 def parse_star_counts_tsv(path, value_col="tpm_unstranded"):
-    """Return {unversioned_ensembl_id: value} for one GDC STAR-counts file.
-
-    Rows starting with 'N_' (summary/QC rows, not genes) are dropped. Gene
-    IDs are de-versioned. Duplicate unversioned IDs (rare, but PAR-linked
-    genes on X/Y can collide after stripping the version) keep the first
-    occurrence and are reported, not silently overwritten.
-    """
     with open(path) as fh:
         lines = fh.readlines()
 
-    # first non-comment line is the header
     start = 0
     while start < len(lines) and lines[start].startswith("#"):
         start += 1
@@ -70,7 +37,7 @@ def parse_star_counts_tsv(path, value_col="tpm_unstranded"):
         if not parts or not parts[0] or parts[0].startswith("N_"):
             continue
         if len(parts) <= val_idx:
-            continue  # malformed row, shorter than expected -- skip, do not crash
+            continue
         gid = strip_ensembl_version(parts[gene_id_idx])
         try:
             val = float(parts[val_idx])

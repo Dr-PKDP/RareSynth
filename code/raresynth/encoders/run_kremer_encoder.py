@@ -1,13 +1,4 @@
-"""
-Run the Kremer external-validation-2 cohort through Geneformer.
-
-Deliberately a thin wrapper reusing run_rna_encoder's already-verified
-tokenize/embed/identity-check logic rather than a parallel reimplementation
--- only the upstream AnnData construction differs (kremer_rna.py handles the
-transposed, double-suffixed, single-combined-matrix format; everything after
-that point is identical to the TCGA/CPTAC path and carries the same
-case_id-tracking guarantees verified there).
-"""
+"""Pfib_423 RNA embeddings: gene-count matrices, AnnData, Geneformer tokenization and CLS embedding extraction (.npz)."""
 
 from __future__ import annotations
 
@@ -66,8 +57,6 @@ def run(gene_counts_path, geneformer_repo, out_dir, model_version="V2",
     embs = embex.extract_embs(str(model_dir), str(tokenized_dir / "kremer.dataset"),
                               str(emb_out_dir), "kremer_embs")
 
-    # identical identity-verification logic to run_rna_encoder.py -- see
-    # PROGRESS.md bugs #6/#7 for why this is not optional
     if "case_id" not in embs.columns:
         raise RuntimeError("embs has no case_id column -- stop, do not guess alignment")
     returned_ids_list = list(embs["case_id"])

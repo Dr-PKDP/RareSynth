@@ -1,19 +1,4 @@
-"""
-End-to-end RNA embedding pipeline: case index -> per-case STAR file lookup
--> AnnData -> Geneformer tokenization -> CLS embedding extraction -> .npz.
-
-Every API call here is grounded in the actual installed Geneformer source,
-read directly rather than assumed (see PROGRESS.md bug log and chat history
-for the verification trail: tokenizer requires raw counts not TPM,
-EmbExtractor's real valid_option_dict, max_ncells defaults to 1000 and MUST
-be set to None or every cohort beyond the first 1000 samples would be
-silently dropped).
-
-This still cannot be verified end-to-end from a sandbox with no GPU and no
-downloaded model weights -- run the --smoke-test path (a handful of cases)
-before committing to the full cohort, the same discipline used for every
-other stage of this pipeline.
-"""
+"""TCGA RNA embeddings: case index, AnnData, Geneformer tokenization and CLS embedding extraction (.npz)."""
 
 from __future__ import annotations
 
@@ -26,16 +11,6 @@ import numpy as np
 
 
 def find_star_file(case_id, tcga_manifest, raw_dir):
-    """Locate the downloaded STAR-counts TSV for one case.
-
-    gdc_pull.py extracts files into <out_dir>/<file_id>/<file_name>/ (both
-    the tar-extraction path and the single-file raw-response path use this
-    same layout -- see gdc_pull.py's _is_gzip branch). This walks that
-    structure rather than assuming a single fixed file_id, since a case can
-    have more than one RNA file (rare, but possible -- e.g. a resequenced
-    sample) and we want the first one deterministically rather than an
-    arbitrary dict-iteration order.
-    """
     rec = tcga_manifest.get(case_id)
     if not rec:
         return None
@@ -49,9 +24,6 @@ def find_star_file(case_id, tcga_manifest, raw_dir):
 
 
 def load_case_paths(case_index_csv, tcga_manifest_path, raw_dir, split_filter=None):
-    """Return {case_id: star_file_path} for cases in the index that have
-    RNA and (optionally) match a given split.
-    """
     manifest = json.loads(Path(tcga_manifest_path).read_text())
     out = {}
     missing_on_disk = []
@@ -84,9 +56,6 @@ def run_pipeline(case_index_csv, tcga_manifest_path, raw_dir, geneformer_repo,
     out.mkdir(parents=True, exist_ok=True)
     repo = Path(geneformer_repo)
 
-    # locate the right dictionary/model paths for the requested version --
-    # confirmed layout from `find ... -iname "*dict*"` earlier in this
-    # project, not assumed
     if model_version == "V2":
         token_dict_path = repo / "geneformer" / f"token_dictionary_gc{model_size}.pkl"
         model_dir = repo / f"Geneformer-V2-{model_size}"
@@ -118,42 +87,29 @@ def run_pipeline(case_index_csv, tcga_manifest_path, raw_dir, geneformer_repo,
     print(f"\nbuilding AnnData -> {h5ad_path}")
     adata, dropped = build_anndata_from_star_files(case_paths, h5ad_path, gene_vocab=vocab)
 
-    # tokenize
     from geneformer import TranscriptomeTokenizer
     tokenized_dir = out / "tokenized"
     tokenized_dir.mkdir(exist_ok=True)
     print(f"\ntokenizing -> {tokenized_dir}")
     tk_kwargs = dict(nproc=nproc)
-    custom_attrs = {"case_id": "case_id"}  # obs column name -> output attr name;
-    # REQUIRED, not optional -- without this the tokenized dataset carries no
-    # identity information at all and embedding rows cannot be matched back
-    # to a case (confirmed by a live run: the returned embeddings had bare
-    # numeric columns and a plain RangeIndex, no case_id anywhere)
+    custom_attrs = {"case_id": "case_id"}
     try:
         tk = TranscriptomeTokenizer(custom_attrs, model_version=model_version, **tk_kwargs)
     except TypeError:
-        # older/newer signature without model_version as a TranscriptomeTokenizer
-        # kwarg -- fall back and let it use whatever its own default is, but
-        # warn loudly since this changes which token dictionary gets used
         print("  WARNING: TranscriptomeTokenizer did not accept model_version "
              "as a keyword -- verify manually which dictionary it defaulted "
              "to before trusting the output embeddings")
         tk = TranscriptomeTokenizer(custom_attrs, **tk_kwargs)
     tk.tokenize_data(str(h5ad_dir), str(tokenized_dir), "cohort", file_format="h5ad")
 
-    # extract embeddings
     from geneformer import EmbExtractor
     print(f"\nextracting CLS embeddings from {model_dir}")
     embex = EmbExtractor(
         model_type="Pretrained",
         num_classes=0,
         emb_mode="cls",
-        max_ncells=None,  # CRITICAL: default is 1000, which would silently
-                          # drop every sample past the first 1000
-        emb_label=["case_id"],  # CRITICAL: without this the returned
-                          # embeddings carry no identity information at all
-                          # (confirmed empirically -- see custom_attrs note
-                          # above in the tokenizer call)
+        max_ncells=None,
+        emb_label=["case_id"],
         forward_batch_size=forward_batch_size,
         model_version=model_version,
         nproc=nproc,
@@ -176,17 +132,6 @@ def run_pipeline(case_index_csv, tcga_manifest_path, raw_dir, geneformer_repo,
             "before proceeding."
         )
 
-    # TranscriptomeTokenizer applies its OWN internal gene filtering (a
-    # restriction to a coding+miRNA gene subset, visible in its source as
-    # the coding_miRNA_loc step) that is separate from and can be stricter
-    # than the vocabulary pre-filter in rna_to_anndata.py. A sample that
-    # passes our own min_genes_detected check can still be dropped here if
-    # too few of ITS genes survive that internal restriction. This is a
-    # legitimate, sample-specific quality exclusion -- not by itself a sign
-    # of a broken pipeline -- so it must not be conflated with genuine
-    # misalignment (duplicate ids, or ids appearing that were never input,
-    # either of which WOULD indicate real corruption and should still hard
-    # fail).
     returned_ids_list = list(embs["case_id"])
     returned_ids = set(returned_ids_list)
     if len(returned_ids) != len(returned_ids_list):
@@ -233,7 +178,6 @@ def run_pipeline(case_index_csv, tcga_manifest_path, raw_dir, geneformer_repo,
                 f"a shrunken cohort."
             )
 
-    # identity now comes directly from the data, not from an assumed order
     case_ids_out = embs["case_id"].values
     emb_cols = [c for c in embs.columns if c != "case_id"]
     emb_matrix = embs[emb_cols].values.astype(np.float32)

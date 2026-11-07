@@ -1,23 +1,4 @@
-"""
-Distributional fidelity: Frechet distance, PRDC, and a classifier two-sample
-test with an honest null.
-
-Notes on what these do and do not show
---------------------------------------
-FID here is computed in the penultimate feature space of an independently
-trained tissue-of-origin classifier.  That makes the number comparable across
-methods *within this paper* and meaningless across papers, which should be
-stated in the caption.  Reporting it per modality as well as jointly is the
-part that carries information, because a generator can match every marginal
-and still get the joint wrong -- which is exactly the failure mode the paper
-is about, and which FID alone will not detect.  See coherence.py for the
-metric that does.
-
-C2ST is run with a *learned* classifier (gradient-boosted trees), not 1-NN.
-1-NN two-sample tests are known to be weak in high dimension and will report
-chance-level accuracy for generators that a stronger classifier separates
-trivially, which would flatter the method.
-"""
+"""Fidelity metrics: Frechet distance, precision/recall/density/coverage (k-nearest-neighbour) and the classifier two-sample test."""
 
 from __future__ import annotations
 
@@ -27,8 +8,6 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import StratifiedKFold
 from sklearn.neighbors import NearestNeighbors
 
-
-# --------------------------------------------------------------------------
 
 def frechet_distance(a: np.ndarray, b: np.ndarray, eps: float = 1e-6) -> float:
     mu1, mu2 = a.mean(0), b.mean(0)
@@ -44,7 +23,6 @@ def frechet_distance(a: np.ndarray, b: np.ndarray, eps: float = 1e-6) -> float:
 
 
 def prdc(real: np.ndarray, fake: np.ndarray, k: int = 5) -> dict:
-    """Precision, recall, density, coverage (Naeem et al., 2020)."""
 
     def knn_radius(X):
         nn = NearestNeighbors(n_neighbors=k + 1).fit(X)
@@ -73,12 +51,6 @@ def c2st(
     n_permutations: int = 1000,
     seed: int = 0,
 ) -> dict:
-    """Classifier two-sample test with a permutation null.
-
-    Returns accuracy, the permutation p-value, and the null distribution mean,
-    so the reader can see that 0.5 is the empirical and not merely the
-    theoretical chance level for this sample size.
-    """
     rng = np.random.default_rng(seed)
     X = np.vstack([real, fake])
     y = np.concatenate([np.zeros(len(real)), np.ones(len(fake))])
@@ -96,7 +68,7 @@ def c2st(
 
     obs = cv_acc(y)
     null = []
-    n_perm_cheap = min(n_permutations, 200)  # full CV per permutation is costly
+    n_perm_cheap = min(n_permutations, 200)
     for _ in range(n_perm_cheap):
         null.append(cv_acc(rng.permutation(y)))
     null = np.array(null)
@@ -110,7 +82,6 @@ def c2st(
 
 
 def bootstrap_ci(fn, *arrays, n_boot: int = 1000, seed: int = 0, alpha: float = 0.05):
-    """Patient-level bootstrap CI for any metric function of arrays."""
     rng = np.random.default_rng(seed)
     vals = []
     n = [len(a) for a in arrays]
@@ -124,7 +95,6 @@ def bootstrap_ci(fn, *arrays, n_boot: int = 1000, seed: int = 0, alpha: float = 
 
 
 def per_modality_report(real, fake, spec, feature_fn=None, k=5, seed=0):
-    """Joint + per-modality fidelity table (populates Table 4)."""
     rows = {}
     slices = {"joint": slice(0, real.shape[1])}
     slices.update(spec.slices())

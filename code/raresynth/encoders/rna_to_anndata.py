@@ -1,28 +1,4 @@
-"""
-Build the AnnData (.h5ad) input Geneformer's TranscriptomeTokenizer requires,
-from GDC STAR-counts files.
-
-Confirmed against the actual installed tokenizer.py source (not a tutorial,
-not a guess) before writing this:
-
-    Required format: raw counts, .h5ad/.loom/.zarr
-    Required var (gene) attribute:  "ensembl_id"
-    Required obs (cell/sample) attribute: "n_counts" (total counts)
-
-This means the correct GDC column is "unstranded" (raw STAR counts), NOT
-"tpm_unstranded" -- an earlier draft of the RNA encoder (GeneformerEncoder in
-encoders/foundation.py) assumed TPM input with a hand-rolled median-division
-step. That does not match how Geneformer's normalization actually works
-(rank value encoding scaled by n_counts and the gene median dictionary
-together) and has been superseded by this module plus the real
-TranscriptomeTokenizer / EmbExtractor classes. foundation.py's
-GeneformerEncoder should not be used.
-
-The gene set is restricted to Geneformer's own token vocabulary up front.
-Any gene not in that vocabulary is dropped by the tokenizer regardless. This
-keeps the matrix a consistent, known shape across every sample and cohort
-without silently including genes that will never be used.
-"""
+"""Assemble an AnnData object of raw STAR counts, indexed by unversioned Ensembl id, from per-case GDC files."""
 
 from __future__ import annotations
 
@@ -37,38 +13,13 @@ from .rna_parser import parse_star_counts_tsv
 
 
 def load_geneformer_vocab(token_dictionary_path):
-    """Return the set of unversioned Ensembl gene ids Geneformer's tokenizer
-    can actually use. Any gene outside this set is dropped by the tokenizer
-    regardless of what we feed in, so filtering here keeps the AnnData
-    matrix meaningfully sized rather than carrying dead columns.
-    """
     with open(token_dictionary_path, "rb") as fh:
         token_dict = pickle.load(fh)
-    # keys are gene ids (Ensembl or the small set of special tokens like
-    # <pad>/<cls>/<eos> depending on model version) -- keep only ones that
-    # look like Ensembl gene ids
     return {k for k in token_dict.keys() if isinstance(k, str) and k.startswith("ENSG")}
 
 
 def build_anndata_from_star_files(case_paths, out_h5ad_path, gene_vocab=None,
                                   obs_extra=None, min_genes_detected=200):
-    """
-    case_paths : dict case_id -> path to a GDC STAR-counts .tsv(.gz)
-    gene_vocab : optional set of unversioned Ensembl ids to restrict to
-                (pass Geneformer's own vocabulary here -- see
-                load_geneformer_vocab)
-    obs_extra  : optional dict case_id -> dict of extra obs columns
-                (e.g. {"organ": "kidney", "cell_type": "tumor"}) to carry
-                through as the TranscriptomeTokenizer's custom_attr_name_dict
-                source
-    min_genes_detected : samples with fewer nonzero genes than this are
-                dropped and reported -- a near-empty row is very likely a
-                parsing or QC failure, not real biology, and would corrupt
-                the per-sample rank encoding silently otherwise.
-
-    Returns (AnnData, list of dropped case_ids with reasons) so the caller
-    can log what got excluded rather than it disappearing invisibly.
-    """
     import anndata as ad
 
     parsed = {}
@@ -101,9 +52,6 @@ def build_anndata_from_star_files(case_paths, out_h5ad_path, gene_vocab=None,
     gene_idx = {g: i for i, g in enumerate(gene_list)}
     case_list = sorted(parsed.keys())
 
-    # build the counts matrix sparsely -- most gene x sample entries are 0,
-    # and TCGA-scale sample counts x ~20k genes as a dense float64 array
-    # would be wasteful for no benefit (the tokenizer masks zeros anyway)
     rows, cols, vals = [], [], []
     for i, case_id in enumerate(case_list):
         for g, v in parsed[case_id].items():
@@ -115,21 +63,14 @@ def build_anndata_from_star_files(case_paths, out_h5ad_path, gene_vocab=None,
                       dtype=np.float32)
 
     obs = pd.DataFrame(index=case_list)
-    obs["case_id"] = case_list  # explicit column, not just the index --
-    # TranscriptomeTokenizer's custom_attr_name_dict carries named obs
-    # COLUMNS through tokenization, not the DataFrame index. Without this,
-    # there is no way to recover which output row belongs to which sample:
-    # confirmed by a live run where EmbExtractor's returned embeddings had
-    # only bare numeric columns (0..767) and a plain RangeIndex, with
-    # tokenization run under nproc=16 multiprocessing giving no guarantee
-    # that row order was preserved from the AnnData input.
+    obs["case_id"] = case_list
     obs["n_counts"] = np.asarray(X.sum(axis=1)).flatten()
     if obs_extra:
         for col in sorted({k for d in obs_extra.values() for k in d.keys()}):
             obs[col] = [obs_extra.get(cid, {}).get(col, "") for cid in case_list]
 
     var = pd.DataFrame(index=gene_list)
-    var["ensembl_id"] = gene_list  # tokenizer reads this as a column, not just the index
+    var["ensembl_id"] = gene_list
 
     adata = ad.AnnData(X=X, obs=obs, var=var)
 
