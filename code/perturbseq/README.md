@@ -1,6 +1,6 @@
 # Perturb-seq comparison (Supplementary Information S5)
 
-Post hoc comparison of the mapped UFM1 direction with measured knockdown profiles from the K562 and RPE1 essential-gene CRISPRi Perturb-seq screens of Replogle et al., Cell 185, 2559 (2022), https://doi.org/10.1016/j.cell.2022.05.013 (Figshare+ article 20029387; RPE1 raw single-cell file https://ndownloader.figshare.com/files/35775606).
+Post hoc comparison of the mapped UFM1 direction with measured knockdown profiles from the K562 and RPE1 essential-gene CRISPRi Perturb-seq screens of Replogle et al., Cell 185, 2559 (2022), https://doi.org/10.1016/j.cell.2022.05.013 (Figshare+ article 20029387; RPE1 raw single-cell file https://ndownloader.figshare.com/files/35775606; processed K562 essential-gene file https://zenodo.org/records/10044268/files/ReplogleWeissman2022_K562_essential.h5ad).
 
 ```
 D=data/raw/mechanism/ppn_extracted; L=data/raw/mechanism/lincs; K=data/raw/perturbseq/ReplogleWeissman2022_K562_essential.h5ad
